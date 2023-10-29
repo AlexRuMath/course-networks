@@ -16,12 +16,13 @@ class EchoServer(Base):
         for _ in range(self.iterations):
             msg = self.socket.recv(self.msg_size)
             self.socket.send(msg)
-            
+
+
 class EchoClient(Base):
 
     def run(self):
         for _ in range(self.iterations):
             msg = os.urandom(self.msg_size)
             n = self.socket.send(msg)
-            assert n == self.msg_size
-            assert msg == self.socket.recv(n)
+            assert n == self.msg_size # Проверяем, что отправили всё
+            assert msg == self.socket.recv(n) # Проверяем ответ
