@@ -34,11 +34,19 @@ class MyTCPProtocol(UDPBasedProtocol):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.size_segment = 20
+        self.size_segment = 1024
         self.size_add = 4
+        self.LIMIT_TRYING = 5
+
+    def sendMsg(self, msg):
+        request = self.sendto(msg) - 2 * self.size_add
+        response_body = self.recvfrom(self.size_add)
+        response = Response.deserialize(response_body, self.size_add)
+
+        return request, response
 
     def send(self, data: bytes):
-        #logger.info(["OUT", self.remote_addr], f"Data: {data}")
+        # logger.info(["OUT", self.remote_addr], f"Data: {data}")
         package = Package(data)
         segments = package.split(self.size_segment, self.size_add)
         sum_bytes = 0
@@ -46,25 +54,28 @@ class MyTCPProtocol(UDPBasedProtocol):
         start = 0
         end = len(segments)
 
-        for i in range(start, end):
-            segment = segments[i]
-            req_body = segment.serialize()
-            logger.warning(["OUT"], str(segment))
-            request = self.sendto(req_body) - 2 * segment.size_bytes
-            response_body = self.recvfrom(self.size_add)
-            response = Response.deserialize(response_body, self.size_add)
-            logger.warning(["OUT"], "Response " + str(response))
+        approve = []
+        while len(approve) != len(segments):
+            for i in range(start, end):
+                segment = segments[i]
+                req_body = segment.serialize()
+                logger.warning(["OUT"], str(segment))
+                request, response = self.sendMsg(req_body)
+                logger.warning(["OUT"], "Response " + str(response))
 
-            if response.status_code != OK:
-                logger.err(["OUT", self.remote_addr], f"Code: {response.status_code}, Msg: {response.msg}")
+                if response.status_code != OK:
+                    logger.err(["OUT", self.remote_addr], f"Code: {response.status_code}, Msg: {response.msg}")
+                    start = i
+                    break
 
-            sum_bytes += request
+                sum_bytes += request
+                approve.append(i)
 
         return sum_bytes
 
     def recv(self, n: int) -> object:
-        buffer = []
         size_step = self.size_segment + 2 * self.size_add
+        buffer = []
 
         prev_ack = 0
         while True:
@@ -74,8 +85,7 @@ class MyTCPProtocol(UDPBasedProtocol):
             logger.warning(["IN", self.remote_addr], str(segment))
             if segment.seq != prev_ack:
                 logger.err(["IN", self.remote_addr], f"The order is broken: seq={segment.seq} prev_ack={prev_ack}")
-                err_msg = int.to_bytes(FAIL_PACKAGE, self.size_add, 'big') + \
-                          int.to_bytes(len(buffer), self.size_add, 'big')
+                err_msg = int.to_bytes(FAIL_PACKAGE, self.size_add, 'big')
                 self.sendto(err_msg)
 
             prev_ack = segment.ack
@@ -91,5 +101,5 @@ class MyTCPProtocol(UDPBasedProtocol):
 
         response = b''.join(buffer)
 
-        #logger.info(["IN", self.remote_addr], f"Return response: {response}")
+        # logger.info(["IN", self.remote_addr], f"Return response: {response}")
         return response
