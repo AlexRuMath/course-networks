@@ -23,8 +23,7 @@ class UDPBasedProtocol:
 
 logger = Logger(f"/logs/{int(time.time())}.log")
 logger.print_mode = False
-logger.warning_mode = True
-logger.status = False
+logger.status = True
 
 OK = 200
 FAIL_PACKAGE = 500
@@ -38,6 +37,9 @@ class MyTCPProtocol(UDPBasedProtocol):
         self.size_add = 4
         self.LIMIT_TRYING = 5
 
+        self.int2byte = lambda x: int.to_bytes(x, self.size_add, 'big')
+        self.byte2int = lambda x: int.from_bytes(x, 'big')
+
     def sendMsg(self, msg):
         request = self.sendto(msg) - 2 * self.size_add
         response_body = self.recvfrom(self.size_add)
@@ -46,13 +48,16 @@ class MyTCPProtocol(UDPBasedProtocol):
         return request, response
 
     def send(self, data: bytes):
-        # logger.info(["OUT", self.remote_addr], f"Data: {data}")
+        logger.info(["OUT", self.remote_addr], f"Data: {data}")
         package = Package(data)
         segments = package.split(self.size_segment, self.size_add)
         sum_bytes = 0
 
         start = 0
         end = len(segments)
+
+        handshake = self.int2byte(len(segments))
+        _, _ = self.sendMsg(handshake)
 
         approve = []
         while len(approve) != len(segments):
@@ -74,32 +79,38 @@ class MyTCPProtocol(UDPBasedProtocol):
         return sum_bytes
 
     def recv(self, n: int) -> object:
-        size_step = self.size_segment + 2 * self.size_add
+        handshake = self.recvfrom(self.size_add)
+        count_segments = self.byte2int(handshake)
+        self.sendto(self.int2byte(OK))
         buffer = []
 
+        sum_bytes = lambda x: sum([len(seg) for seg in x])
+        size_step = self.size_segment + 2 * self.size_add
+        b_sum = 0
         prev_ack = 0
-        while True:
-            segment_bytes = self.recvfrom(size_step)
-            segment = Segment.deserialize(segment_bytes, self.size_add)
+        while b_sum != n:
+            buffer = [b'' for _ in range(count_segments)]
 
-            logger.warning(["IN", self.remote_addr], str(segment))
-            if segment.seq != prev_ack:
-                logger.err(["IN", self.remote_addr], f"The order is broken: seq={segment.seq} prev_ack={prev_ack}")
-                err_msg = int.to_bytes(FAIL_PACKAGE, self.size_add, 'big')
-                self.sendto(err_msg)
+            for i in range(count_segments):
+                res = self.recvfrom(size_step)
+                segment = Segment.deserialize(res, self.size_add)
 
-            prev_ack = segment.ack
-            buffer.append(segment.data)
+                logger.warning(["IN", self.remote_addr], str(segment))
+                if segment.seq != prev_ack:
+                    logger.err(["IN", self.remote_addr], f"The order is broken: seq={segment.seq} prev_ack={prev_ack}")
+                    err_msg = self.int2byte(FAIL_PACKAGE)
+                    self.sendto(err_msg)
+                    break
 
-            logger.warning(["IN"], "Send OK")
-            self.sendto(int.to_bytes(OK, self.size_add, 'big'))
+                prev_ack = segment.ack
+                buffer[i] = segment.data
 
-            len_msg = sum([len(segment) for segment in buffer])
+                logger.warning(["IN"], "Send OK")
+                self.sendto(self.int2byte(OK))
 
-            if segment.ack == n and len_msg == n:
-                break
+            b_sum = sum_bytes(buffer)
 
         response = b''.join(buffer)
 
-        # logger.info(["IN", self.remote_addr], f"Return response: {response}")
+        logger.info(["IN", self.remote_addr], f"Return response: {response}")
         return response
